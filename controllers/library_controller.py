@@ -1,0 +1,124 @@
+from config.database import get_connection
+
+TABLES = {
+    "Autores": ("Autores", "IdAutor", ["Nombre", "Apellido"]),
+    "Editoriales": ("Editoriales", "IdEditorial", ["Nombre"]),
+    "Usuarios": ("Usuarios", "IdUsuario", ["Nombre","Apellido","Documento","Correo","Telefono"]),
+    "Libros": ("Libros", "ISBN", ["ISBN","Titulo","IdAutor","IdEditorial","Categoria","Anio","Existencias"]),
+}
+class LibraryController:
+    def list_rows(self, table):
+        conn=get_connection()
+        try:
+            cur=conn.cursor()
+            if table=="Libros":
+                cur.execute("""SELECT l.ISBN,l.Titulo,a.Nombre AS Autor,e.Nombre AS Editorial,
+                    l.Categoria,l.Anio,l.Existencias,l.IdAutor,l.IdEditorial
+                    FROM Libros l JOIN Autores a ON a.IdAutor=l.IdAutor
+                    JOIN Editoriales e ON e.IdEditorial=l.IdEditorial ORDER BY l.Titulo""")
+            else:
+                cur.execute(f"SELECT * FROM `{table}` ORDER BY 1")
+            cols=[d[0] for d in cur.description]
+            return [dict(zip(cols,row)) for row in cur.fetchall()]
+        finally: conn.close()
+    def save(self, table, values, key_value=None):
+        name, key, fields = TABLES[table]
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+
+            if key_value is None:
+                columns = ", ".join(f"`{f}`" for f in fields)
+                marks = ", ".join(["%s"] * len(fields))
+                cur.execute(
+                    f"INSERT INTO `{name}` ({columns}) VALUES ({marks})",
+                    tuple(values[f] for f in fields)
+                )
+            else:
+                sets = ", ".join(f"`{f}`=%s" for f in fields if f != key)
+                params = [values[f] for f in fields if f != key] + [key_value]
+                cur.execute(
+                    f"UPDATE `{name}` SET {sets} WHERE `{key}`=%s",
+                    tuple(params)
+                )
+
+            conn.commit()
+
+            if key_value is None:
+                return cur.lastrowid
+
+            return key_value
+
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    def delete(self, table, key_value):
+        name,key,_=TABLES[table]
+        conn=get_connection()
+        try:
+            cur=conn.cursor()
+            cur.execute(f"DELETE FROM `{name}` WHERE `{key}`=%s",(key_value,))
+            conn.commit()
+        except Exception:
+            conn.rollback(); raise
+        finally: conn.close()
+    def search_isbn(self, isbn):
+        conn=get_connection()
+        try:
+            cur=conn.cursor(dictionary=True)
+            cur.execute("SELECT * FROM Libros WHERE ISBN=%s",(isbn.strip(),))
+            return cur.fetchone()
+        finally: conn.close()
+    def list_choices(self, table):
+        conn=get_connection()
+        try:
+            cur=conn.cursor()
+            if table=="Autores": cur.execute("SELECT IdAutor, CONCAT(Nombre,' ',Apellido) FROM Autores ORDER BY Nombre")
+            elif table=="Editoriales": cur.execute("SELECT IdEditorial,Nombre FROM Editoriales ORDER BY Nombre")
+            elif table=="Libros": cur.execute("SELECT ISBN,Titulo FROM Libros ORDER BY Titulo")
+            elif table=="Usuarios": cur.execute("SELECT IdUsuario,CONCAT(Nombre,' ',Apellido) FROM Usuarios ORDER BY Nombre")
+            return cur.fetchall()
+        finally: conn.close()
+    def loan_book(self, user_id, isbn, due_date):
+        conn=get_connection()
+        try:
+            conn.start_transaction()
+            cur=conn.cursor()
+            cur.execute("SELECT Existencias FROM Libros WHERE ISBN=%s FOR UPDATE",(isbn,))
+            row=cur.fetchone()
+            if not row: raise ValueError("No existe el libro seleccionado.")
+            if row[0] < 1: raise ValueError("No hay existencias disponibles.")
+            cur.execute("UPDATE Libros SET Existencias=Existencias-1 WHERE ISBN=%s",(isbn,))
+            cur.execute("""INSERT INTO Prestamos (ISBN,IdUsuario,FechaPrestamo,FechaVencimiento,Estado)
+                VALUES (%s,%s,CURDATE(),%s,'Prestado')""",(isbn,user_id,due_date))
+            conn.commit()
+        except Exception:
+            conn.rollback(); raise
+        finally: conn.close()
+    def return_loan(self, loan_id):
+        conn=get_connection()
+        try:
+            conn.start_transaction()
+            cur=conn.cursor()
+            cur.execute("SELECT ISBN,Estado FROM Prestamos WHERE IdPrestamo=%s FOR UPDATE",(loan_id,))
+            row=cur.fetchone()
+            if not row: raise ValueError("Préstamo no encontrado.")
+            if row[1]=="Devuelto": raise ValueError("Este préstamo ya fue devuelto.")
+            cur.execute("UPDATE Prestamos SET Estado='Devuelto',FechaDevolucion=CURDATE() WHERE IdPrestamo=%s",(loan_id,))
+            cur.execute("UPDATE Libros SET Existencias=Existencias+1 WHERE ISBN=%s",(row[0],))
+            conn.commit()
+        except Exception:
+            conn.rollback(); raise
+        finally: conn.close()
+    def list_loans(self):
+        conn=get_connection()
+        try:
+            cur=conn.cursor(dictionary=True)
+            cur.execute("""SELECT p.IdPrestamo,l.Titulo,u.Nombre,u.Apellido,p.FechaPrestamo,
+                p.FechaVencimiento,p.FechaDevolucion,p.Estado,p.ISBN,p.IdUsuario
+                FROM Prestamos p JOIN Libros l ON l.ISBN=p.ISBN
+                JOIN Usuarios u ON u.IdUsuario=p.IdUsuario ORDER BY p.IdPrestamo DESC""")
+            return cur.fetchall()
+        finally: conn.close()
