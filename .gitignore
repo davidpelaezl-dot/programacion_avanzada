@@ -1,0 +1,15 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+*.bak
+
+# Respaldos y datos generados
+backup_*.sql
+informes/
+informe_*.txt
+
+# Copias de seguridad de código
+*.bak*
+*.save
